@@ -1,0 +1,12 @@
+{
+  "name": "smart-carpool",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Root tooling for the Smart Carpool shared Supabase database",
+  "scripts": {
+    "supabase": "supabase"
+  },
+  "devDependencies": {
+    "supabase": "^2.121.0"
+  }
+}

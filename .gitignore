@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Environment files (never commit real values)
+.env
+.env.*
+!.env.example
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
+
+# OS junk
+.DS_Store
+Thumbs.db
