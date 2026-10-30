@@ -7,6 +7,11 @@
 --   * INSERT: own row only (recovery path; the trigger is the normal path)
 --   * UPDATE: none - profile edits go through update_profile() RPC only,
 --     which is the pattern we will reuse for any future protected fields.
+--
+-- Privileges (GRANT/REVOKE) are explicit on purpose. Supabase is changing
+-- (and has changed) what new tables get by default, so nothing here relies
+-- on default grants: anon gets nothing, authenticated gets exactly what the
+-- policies below need.
 
 -- 1. Profiles table (1:1 with auth.users)
 create table public.profiles (
@@ -15,7 +20,7 @@ create table public.profiles (
     references auth.users (id) on delete cascade,
   display_name text
     not null
-    check (length(trim(display_name)) > 0),
+    check (length(trim(display_name)) > 0 and length(display_name) <= 60),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -27,12 +32,17 @@ comment on table public.profiles is
 create function public.set_updated_at()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
   new.updated_at := now();
   return new;
 end;
 $$;
+
+-- Trigger helpers are never called directly; Postgres does not check EXECUTE
+-- when a trigger fires, so strip the default PUBLIC grant.
+revoke execute on function public.set_updated_at() from public, anon, authenticated;
 
 create trigger profiles_set_updated_at
   before update on public.profiles
@@ -41,7 +51,7 @@ create trigger profiles_set_updated_at
 -- 3. Defensive profile creation on signup.
 --    Never breaks signup:
 --      - display_name falls back through metadata -> email handle -> literal,
---        so it can never be NULL.
+--        so it can never be NULL, empty, or longer than the 60-char limit.
 --      - ON CONFLICT DO NOTHING makes duplicate attempts harmless.
 --      - The EXCEPTION wrapper guarantees a profile problem can never
 --        abort the signup transaction (a warning is still logged).
@@ -57,9 +67,9 @@ begin
     values (
       new.id,
       coalesce(
-        nullif(trim(new.raw_user_meta_data ->> 'display_name'), ''),
-        nullif(trim(new.raw_user_meta_data ->> 'name'), ''),
-        nullif(split_part(new.email, '@', 1), ''),
+        nullif(trim(left(new.raw_user_meta_data ->> 'display_name', 60)), ''),
+        nullif(trim(left(new.raw_user_meta_data ->> 'name', 60)), ''),
+        nullif(trim(left(split_part(new.email, '@', 1), 60)), ''),
         'New User'
       )
     )
@@ -83,6 +93,13 @@ create trigger on_auth_user_created
 -- 4. Row Level Security
 alter table public.profiles enable row level security;
 
+-- Explicit table privileges (RLS still decides which rows).
+-- INSERT is limited to the two columns a client may legitimately supply.
+revoke all on table public.profiles from anon, authenticated;
+grant select on table public.profiles to authenticated;
+grant insert (id, display_name) on table public.profiles to authenticated;
+grant select, insert, update, delete on table public.profiles to service_role;
+
 -- Any signed-in user can read basic profile info (driver names on rides, etc.)
 create policy profiles_select_authenticated
   on public.profiles for select
@@ -94,9 +111,9 @@ create policy profiles_select_authenticated
 create policy profiles_insert_self_recovery
   on public.profiles for insert
   to authenticated
-  with check (id = auth.uid());
+  with check (id = (select auth.uid()));
 
--- NOTE: deliberately no UPDATE policy. See update_profile() below.
+-- NOTE: deliberately no UPDATE policy and no UPDATE privilege. See update_profile() below.
 
 -- 5. Profile updates via secure RPC.
 --    The function touches display_name only, so future protected columns
@@ -109,29 +126,26 @@ security definer
 set search_path = ''
 as $$
 declare
+  v_caller uuid := auth.uid();
+  v_name text := trim(coalesce(p_display_name, ''));
   v_profile public.profiles%rowtype;
 begin
-  if auth.uid() is null then
+  if v_caller is null then
     raise exception 'NOT_AUTHORIZED: you must be signed in';
   end if;
 
-  if p_display_name is null
-     or length(trim(p_display_name)) = 0
-     or length(p_display_name) > 60 then
+  if length(v_name) = 0 or length(v_name) > 60 then
     raise exception 'VALIDATION_ERROR: display name must be 1-60 characters';
   end if;
 
   update public.profiles
-     set display_name = p_display_name
-   where id = auth.uid();
+     set display_name = v_name
+   where id = v_caller
+  returning * into v_profile;
 
   if not found then
     raise exception 'NOT_FOUND: no profile row for this account';
   end if;
-
-  select * into v_profile
-    from public.profiles
-   where id = auth.uid();
 
   return v_profile;
 end;

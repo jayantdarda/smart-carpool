@@ -1,3 +1,6 @@
+# Claude config
+.claude/
+
 # Dependencies
 node_modules/
 
@@ -9,6 +12,9 @@ node_modules/
 # Supabase CLI local state
 supabase/.temp/
 supabase/.branches/
+
+# Fixed supabase files
+smart-carpool-supabase-fixed/
 
 # OS junk
 .DS_Store
