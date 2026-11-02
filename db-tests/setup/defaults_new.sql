@@ -1,0 +1,1 @@
+-- NEW Supabase behaviour: no default grants on new objects (nothing to do)
