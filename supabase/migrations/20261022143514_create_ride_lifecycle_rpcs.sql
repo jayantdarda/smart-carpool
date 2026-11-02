@@ -6,10 +6,10 @@
 -- SECURITY DEFINER, empty search_path, EXECUTE only for authenticated.
 
 -- 1. RPC: start_ride (driver: scheduled -> in_progress)
---    Only from 30 minutes before the scheduled departure onward; a late
---    start (after departure) is still allowed. Requests the driver never
---    answered lapse ('expired'): once a ride is under way nobody can
---    approve, reject, or cancel them, so they must not linger.
+--    Only within the start window: from 30 minutes before the scheduled
+--    departure until 12 hours after it (both boundaries inclusive). Requests
+--    the driver never answered lapse ('expired'): once a ride is under way
+--    nobody can approve, reject, or cancel them, so they must not linger.
 create function public.start_ride(p_ride_id uuid)
 returns public.rides
 language plpgsql
@@ -42,10 +42,12 @@ begin
   if v_ride.status <> 'scheduled' then
     raise exception 'INVALID_STATE: only scheduled rides can be started (current: %)', v_ride.status;
   end if;
-  -- Start window: no earlier than 30 minutes before the scheduled departure.
-  -- Checked before touching bookings, so a rejected start has no side effects.
-  if v_ride.departure_time > now() + interval '30 minutes' then
-    raise exception 'RIDE_NOT_AVAILABLE: a ride can only be started within 30 minutes of its departure time';
+  -- Start window: from 30 minutes before the scheduled departure until
+  -- 12 hours after it, both boundaries inclusive. Checked before touching
+  -- bookings, so a rejected start has no side effects.
+  if v_ride.departure_time > now() + interval '30 minutes'
+     or v_ride.departure_time < now() - interval '12 hours' then
+    raise exception 'RIDE_NOT_AVAILABLE: a ride can only be started from 30 minutes before its departure until 12 hours after it';
   end if;
 
   update public.bookings
