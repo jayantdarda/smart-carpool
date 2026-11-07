@@ -15,6 +15,7 @@ select p.oid::regprocedure as function_without_search_path
    and not exists (select 1 from unnest(coalesce(p.proconfig, '{}')) cfg where cfg like 'search_path=%');
 
 \echo '== 3. EXPECT: 0 rows - anything in public that the anon role can touch'
+\echo '==    (event-trigger functions are excluded: they cannot be called as API functions)'
 select c.relname as relation, 'table/view' as kind
   from pg_class c join pg_namespace n on n.oid = c.relnamespace
  where n.nspname = 'public' and c.relkind in ('r','v','m','p')
@@ -25,13 +26,16 @@ select c.relname as relation, 'table/view' as kind
 union all
 select p.oid::regprocedure::text, 'function'
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
- where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE');
+ where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE')
+   and p.prorettype <> 'event_trigger'::regtype;
 
 \echo '== 4. EXPECT: only update_profile, request_booking, approve_booking, reject_booking,'
 \echo '==    cancel_booking, start_ride, cancel_ride, complete_ride, simulate_payment'
+\echo '==    (event-trigger functions are excluded for the same reason)'
 select p.oid::regprocedure as function_executable_by_authenticated
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
  where n.nspname = 'public' and has_function_privilege('authenticated', p.oid, 'EXECUTE')
+   and p.prorettype <> 'event_trigger'::regtype
  order by 1::text;
 
 \echo '== 5. EXPECT: 0 rows - authenticated privileges that differ from the intended matrix'
@@ -61,3 +65,18 @@ select column_name from information_schema.column_privileges
 
 \echo '== 7. Policies (review by eye - one line each)'
 select tablename, policyname, cmd, roles from pg_policies where schemaname = 'public' order by 1, 2;
+
+\echo '== 8. EXPECT: 0 rows - a public event-trigger function is not the one bound'
+\echo '==    to the Supabase-managed ensure_rls event trigger (e.g. rls_auto_enable)'
+select p.oid::regprocedure as event_trigger_function_not_ensure_rls
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public' and p.prorettype = 'event_trigger'::regtype
+   and not exists (
+     select 1 from pg_event_trigger et
+      where et.evtname = 'ensure_rls'
+        and et.evtfoid = p.oid);
+
+\echo '== 9. Event triggers on this project (review by eye; hosted: ensure_rls -> rls_auto_enable)'
+select et.evtname, et.evtevent, et.evtenabled, et.evtowner::regrole as owner,
+       et.evtfoid::regprocedure as function
+  from pg_event_trigger et order by 1;

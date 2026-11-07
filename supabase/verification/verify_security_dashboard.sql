@@ -9,7 +9,9 @@
 -- Words like the privilege names are assembled from pieces on purpose: the
 -- dashboard's warning is a text scan and would misread this query as a change.
 -- Event-trigger functions (e.g. Supabase's own rls_auto_enable) are skipped in
--- checks 3 and 4: they cannot be called as API functions.
+-- checks 3 and 4: they cannot be called as API functions. Check 8 flips that
+-- around and requires any such function to be the one bound to the
+-- Supabase-managed 'ensure_rls' event trigger.
 -- It only READS catalog tables. (verify_security.sql is the longer psql version.)
 
 with w as (
@@ -91,4 +93,12 @@ select '7. blanket policy (USING true) that allows writes', tablename || '.' || 
   from pg_policies
  where schemaname = 'public' and cmd in ((select i from w),(select u from w),(select d from w),'ALL')
    and (qual = 'true' or with_check = 'true')
+union all
+select '8. public event-trigger function not bound to the ensure_rls event trigger', p.oid::regprocedure::text
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public' and p.prorettype = 'event_trigger'::regtype
+   and not exists (
+     select 1 from pg_event_trigger et
+      where et.evtname = 'ensure_rls'
+        and et.evtfoid = p.oid)
 order by 1, 2;
